@@ -1,1 +1,5 @@
 /target
+.cargo/
+.env
+.sqlx
+.DS_Store
