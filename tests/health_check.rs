@@ -3,6 +3,7 @@ use rust_url_shortner::{
     startup::run,
     telemetry::{get_subscriber, init_subscriber},
 };
+use secrecy::{SecretBox, SecretString};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use std::{net::TcpListener, sync::LazyLock};
 use uuid::Uuid;
@@ -144,7 +145,7 @@ async fn configure_database(config: &DatabaseSettings) -> PgPool {
     let maintenance_settings = DatabaseSettings {
         database_name: "postgres".to_string(),
         username: "postgres".to_string(),
-        password: "password".to_string(),
+        password: SecretString::new("password".to_string().into()),
         ..config.clone()
     };
 
