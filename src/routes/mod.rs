@@ -3,3 +3,4 @@ mod short_urls;
 
 pub use health_check::health_check;
 pub use short_urls::generate_short_url;
+pub use short_urls::navigate_to_long_url;

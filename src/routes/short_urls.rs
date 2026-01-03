@@ -1,19 +1,37 @@
-use actix_web::{HttpResponse, web};
+use actix_web::{
+    HttpResponse, http,
+    web::{self},
+};
 use chrono::Utc;
 use sqlx::PgPool;
-
-use crate::configuration::Settings;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct GenerateShortUrlRequest {
     url: String,
 }
 
-#[tracing::instrument(name = "Generate short URL", skip(body, connection_pool, settings))]
+#[tracing::instrument(name = "Navigate to long URL", skip(short_code, connection_pool))]
+pub async fn navigate_to_long_url(
+    short_code: web::Path<String>,
+    connection_pool: web::Data<PgPool>,
+) -> HttpResponse {
+    match fetch_long_url(short_code.into_inner(), connection_pool).await {
+        Some(original_url) => {
+            tracing::info!("Redirecting to original URL: {}", original_url);
+            // Navigate to the original URL with 301 redirect
+            HttpResponse::Found()
+                .append_header(("Location", original_url))
+                .status(http::StatusCode::PERMANENT_REDIRECT)
+                .finish()
+        }
+        None => HttpResponse::NotFound().body("Short URL not found."),
+    }
+}
+
+#[tracing::instrument(name = "Generate short URL", skip(body, connection_pool))]
 pub async fn generate_short_url(
     body: web::Json<GenerateShortUrlRequest>,
     connection_pool: web::Data<PgPool>,
-    settings: web::Data<Settings>,
 ) -> HttpResponse {
     if is_valid(&body) == false {
         tracing::error!("Invalid URL format: {}", body.url);
@@ -21,15 +39,14 @@ pub async fn generate_short_url(
     }
     // Fetch long URL if it already exists
     if let Some(existing_short_code) =
-        fetch_long_url(body.url.clone(), connection_pool.clone()).await
+        fetch_short_code(body.url.clone(), connection_pool.clone()).await
     {
         tracing::info!(
             "URL already exists. Returning existing short code: {}.",
             existing_short_code
         );
-        return HttpResponse::Ok().json(
-            serde_json::json!({ "short_url": format!("{}/{}", settings.domain, existing_short_code) }),
-        );
+        return HttpResponse::Ok()
+            .json(serde_json::json!({ "short_url": format!("/{}" ,existing_short_code) }));
     }
     let short_code = generate_short_code(&connection_pool).await;
     if short_code.is_err() {
@@ -37,10 +54,15 @@ pub async fn generate_short_url(
         return HttpResponse::InternalServerError().finish();
     }
     // Insert new URL and generate short code
-    match insert_new_url(body.url.clone(), short_code.as_ref().unwrap(), &connection_pool).await {
-        Ok(_) => HttpResponse::Ok().json(
-            serde_json::json!({ "short_url": format!("{}/{}", settings.domain, short_code.unwrap()) }),
-        ),
+    match insert_new_url(
+        body.url.clone(),
+        short_code.as_ref().unwrap(),
+        &connection_pool,
+    )
+    .await
+    {
+        Ok(_) => HttpResponse::Ok()
+            .json(serde_json::json!({ "short_url": format!("/{}", short_code.unwrap()) })),
         Err(e) => {
             eprintln!("Failed to execute query: {}", e);
             HttpResponse::InternalServerError().finish()
@@ -84,10 +106,33 @@ async fn generate_short_code(connection_pool: &web::Data<PgPool>) -> Result<Stri
 }
 
 #[tracing::instrument(
-    name = "Fetch short code for the given long URL",
+    name = "Fetch fetch_long_url for the given short code",
     skip(connection_pool)
 )]
 pub async fn fetch_long_url(
+    short_code: String,
+    connection_pool: web::Data<PgPool>,
+) -> Option<String> {
+    let result = sqlx::query!(
+        r#"
+        SELECT original_url FROM short_urls WHERE short_code = $1
+        "#,
+        short_code
+    )
+    .fetch_one(connection_pool.get_ref())
+    .await;
+
+    match result {
+        Ok(record) => Some(record.original_url),
+        Err(_) => None,
+    }
+}
+
+#[tracing::instrument(
+    name = "Fetch short code for the given long URL",
+    skip(connection_pool)
+)]
+pub async fn fetch_short_code(
     long_url: String,
     connection_pool: web::Data<PgPool>,
 ) -> Option<String> {

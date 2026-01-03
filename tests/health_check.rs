@@ -1,9 +1,10 @@
+use reqwest::{Client, StatusCode, redirect::Policy};
 use rust_url_shortner::{
     configuration::{DatabaseSettings, get_configuration},
     startup::run,
     telemetry::{get_subscriber, init_subscriber},
 };
-use secrecy::{ExposeSecret, SecretBox, SecretString};
+use secrecy::{ExposeSecret, SecretString};
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use std::{net::TcpListener, sync::LazyLock};
 use uuid::Uuid;
@@ -60,7 +61,7 @@ async fn generate_returns_200_for_vailid_form_data() {
             .unwrap()
             .as_str()
             .unwrap()
-            .starts_with(&app.configuration.domain),
+            .starts_with("/"),
         true
     )
 }
@@ -95,6 +96,53 @@ async fn generate_returns_400_for_invalid_form_data() {
             body
         );
     }
+}
+
+#[tokio::test]
+async fn navigate_to_long_url_works() {
+    // Arrange
+    let app = spawn_app().await;
+    let client = reqwest::Client::new();
+    let request_body = serde_json::json!({
+        "url": "https://www.example.com/some/long/url"
+    });
+
+    // Act
+    let response = client
+        .post(&format!("{}/generate", app.address))
+        .json(&request_body)
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    // Assert
+    assert_eq!(response.status().as_u16(), 200);
+    let short_url = response
+        .json::<serde_json::Value>()
+        .await
+        .expect("Failed to parse response JSON")
+        .get("short_url")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    // navigate to long URL
+    tracing::info!(
+        "Navigating to long URL using short URL: {}{}",
+        app.address,
+        short_url
+    );
+    let client = Client::builder().redirect(Policy::none()).build().unwrap();
+    let response = client
+        .get(format!("{}{}", app.address, &short_url))
+        .send()
+        .await
+        .expect("Failed to send request");
+    assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(
+        response.headers().get("Location").unwrap(),
+        "https://www.example.com/some/long/url"
+    );
 }
 
 // Ensure that the `tracing` stack is only initialised once using `LazyLock`
